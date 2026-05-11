@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cynthion-mcp"
+version = "0.0.1"
+description = "MCP server exposing Cynthion USB analyzer + Facedancer capabilities to LLM agents."
+requires-python = ">=3.10"
+readme = "README.md"
+authors = [{ name = "oliver" }]
+
+dependencies = [
+    "mcp>=1.0.0",
+    "cynthion",
+    # Pinned: 3.1.2 (latest) ships a libgreat-RPC protocol that the Moondancer
+    # firmware bundled in cynthion 0.2.4 doesn't speak. 3.1.1 is the last
+    # version that round-trips with the shipped firmware.
+    "facedancer==3.1.1",
+    "apollo-fpga",
+    "pyusb",
+    "libusb1",
+]
+
+[project.scripts]
+cynthion-mcp = "cynthion_mcp.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
