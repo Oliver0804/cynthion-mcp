@@ -1,10 +1,16 @@
 """MCP server entrypoint — exposes Cynthion sniffer + Facedancer tools over stdio."""
 
-from __future__ import annotations
+# Deliberately NOT using `from __future__ import annotations` here — FastMCP
+# uses pydantic to build per-tool argument models, and pydantic needs annotations
+# to evaluate to real objects (not stringified) so it can resolve forward
+# references like `Literal[...]` through the @_safe wrapper.
 
+import functools
+import inspect
 import logging
 import os
 import sys
+import traceback
 from dataclasses import asdict
 from typing import Literal
 
@@ -14,6 +20,36 @@ from . import capture, emulator, tshark as tshark_mod
 from .hardware import Applet, Hardware
 
 log = logging.getLogger("cynthion_mcp")
+
+
+def _safe(fn):
+    """Wrap a tool body so unhandled exceptions become structured error responses.
+
+    Without this, a single hardware error (libusb timeout, DebuggerNotFound,
+    SoC wedge) propagates through FastMCP's RPC handler and can take down the
+    whole stdio server, requiring a Claude Code restart to recover all 17
+    tools. Returning a dict with an ``error`` key instead lets the LLM retry
+    or call ``recover()`` without losing the rest of the session.
+
+    We preserve ``__signature__`` so FastMCP's introspection still sees the
+    real parameter schema, not ``(*args, **kwargs)``.
+    """
+    sig = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            log.warning("tool %s failed: %s", fn.__name__, e)
+            return {
+                "error": f"{type(e).__name__}: {e}",
+                "tool": fn.__name__,
+                "traceback_tail": traceback.format_exc().strip().splitlines()[-3:],
+            }
+
+    wrapper.__signature__ = sig
+    return wrapper
 
 mcp = FastMCP(
     name="cynthion",
@@ -32,12 +68,14 @@ _hw = Hardware()
 
 
 @mcp.tool()
+@_safe
 def get_status() -> dict:
     """Return current Cynthion connection + bitstream state."""
     return asdict(_hw.get_status())
 
 
 @mcp.tool()
+@_safe
 def switch_mode(applet: Literal["analyzer", "facedancer", "selftest"]) -> dict:
     """Load the named applet onto the FPGA.
 
@@ -50,6 +88,7 @@ def switch_mode(applet: Literal["analyzer", "facedancer", "selftest"]) -> dict:
 
 
 @mcp.tool()
+@_safe
 def recover() -> dict:
     """Attempt software recovery if the board is stuck (handoff timeout, JTAG hang).
 
@@ -63,6 +102,7 @@ def recover() -> dict:
 
 
 @mcp.tool()
+@_safe
 def capture_start(speed: Literal["auto", "high", "full", "low"] = "auto") -> dict:
     """Begin capturing USB traffic on the TARGET-C / TARGET-A passthrough.
 
@@ -78,6 +118,7 @@ def capture_start(speed: Literal["auto", "high", "full", "low"] = "auto") -> dic
 
 
 @mcp.tool()
+@_safe
 def capture_stop() -> dict:
     """Stop the active capture and return summary stats."""
     s = capture.stop_capture()
@@ -93,18 +134,21 @@ def capture_stop() -> dict:
 
 
 @mcp.tool()
+@_safe
 def capture_status() -> dict | None:
     """Return information about the currently active capture, or None."""
     return capture.session_status()
 
 
 @mcp.tool()
+@_safe
 def list_captures() -> list[dict]:
     """List all captures stored under ~/.cynthion-mcp/captures/."""
     return capture.list_captures()
 
 
 @mcp.tool()
+@_safe
 def read_capture(capture_id: str, offset: int = 0, length: int = 4096) -> dict:
     """Read raw bytes from a stored capture file.
 
@@ -125,6 +169,7 @@ def read_capture(capture_id: str, offset: int = 0, length: int = 4096) -> dict:
 
 
 @mcp.tool()
+@_safe
 def convert_to_pcap(capture_id: str, force: bool = False) -> dict:
     """Convert a Cynthion native .bin capture into a pcap (LINKTYPE_USB_2_0).
 
@@ -144,6 +189,7 @@ def convert_to_pcap(capture_id: str, force: bool = False) -> dict:
 
 
 @mcp.tool()
+@_safe
 def dissect_packets(
     capture_id: str,
     display_filter: str | None = None,
@@ -174,6 +220,7 @@ def dissect_packets(
 
 
 @mcp.tool()
+@_safe
 def transaction_summary(capture_id: str) -> dict:
     """High-level counts of token, data, and handshake packets in a capture.
 
@@ -204,6 +251,7 @@ def transaction_summary(capture_id: str) -> dict:
 
 
 @mcp.tool()
+@_safe
 def find_vendor_requests(capture_id: str, limit: int = 100) -> dict:
     """Find vendor-class SETUP tokens — the high-value targets for reverse engineering.
 
@@ -221,6 +269,7 @@ def find_vendor_requests(capture_id: str, limit: int = 100) -> dict:
 
 
 @mcp.tool()
+@_safe
 def emulator_diagnose() -> dict:
     """Probe the Moondancer SoC for libgreat-RPC responsiveness.
 
@@ -233,6 +282,7 @@ def emulator_diagnose() -> dict:
 
 
 @mcp.tool()
+@_safe
 def emulate_device(
     device_type: Literal["ftdi", "keyboard", "vendor"] = "ftdi",
     vendor_id: int | None = None,
@@ -252,6 +302,7 @@ def emulate_device(
 
 
 @mcp.tool()
+@_safe
 def emulate_from_descriptor(
     device_descriptor_hex: str,
     configuration_descriptor_hex: str | None = None,
@@ -277,12 +328,14 @@ def emulate_from_descriptor(
 
 
 @mcp.tool()
+@_safe
 def disconnect_device() -> dict:
     """Stop the active device emulation."""
     return emulator.disconnect_device()
 
 
 @mcp.tool()
+@_safe
 def inject_serial(text: str) -> dict:
     """Push text out the bulk IN endpoint of an active FTDI emulation."""
     return emulator.inject_serial(text)

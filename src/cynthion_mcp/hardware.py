@@ -145,12 +145,18 @@ class Hardware:
             return ApolloDebugger(force_offline=force_offline)
 
     def _safe_soft_reset(self) -> None:
-        try:
-            dbg = ApolloDebugger()
-            dbg.soft_reset()
-            log.info("Apollo soft_reset issued")
-        except Exception as e:
-            log.info("soft_reset skipped: %s", e)
+        # ApolloDebugger() with no flags refuses when an FPGA stub interface
+        # is present ("Apollo stub interface found but not requested to be
+        # forced offline"). In stub mode we have to ask for force_offline=True
+        # explicitly. Try the non-invasive path first, fall back to forcing.
+        for kwargs in ({}, {"force_offline": True}):
+            try:
+                dbg = ApolloDebugger(**kwargs)
+                dbg.soft_reset()
+                log.info("Apollo soft_reset issued (%s)", kwargs or "default")
+                return
+            except Exception as e:
+                log.info("soft_reset attempt %s skipped: %s", kwargs or "default", e)
 
     def _status_via_apollo(self, dev, *, mode: str) -> BoardStatus:
         bitstream_name: str | None = None

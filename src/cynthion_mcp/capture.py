@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import usb.core
 import usb.util
@@ -72,6 +72,7 @@ class CaptureSession:
     path: Path
     _thread: threading.Thread | None = field(default=None, repr=False)
     _stop_flag: threading.Event = field(default_factory=threading.Event, repr=False)
+    _dev: Any = field(default=None, repr=False)  # pyusb Device handle owned by the drainer
     bytes_written: int = 0
     finished_at: float | None = None
     error: str | None = None
@@ -141,8 +142,13 @@ def start_capture(speed: Literal["auto", "high", "full", "low"] = "auto") -> Cap
 
         dev = _open_analyzer()
         _set_state(dev, enable=True, speed=cs)
+        session._dev = dev
 
         def drainer():
+            # One USB handle owned by this thread for the lifetime of the
+            # capture. The drainer is also responsible for disabling capture
+            # and disposing the handle on exit, so we never have two threads
+            # claiming the same device.
             try:
                 with path.open("wb") as fp:
                     while not session._stop_flag.is_set():
@@ -157,6 +163,15 @@ def start_capture(speed: Literal["auto", "high", "full", "low"] = "auto") -> Cap
                             fp.write(chunk)
                             session.bytes_written += len(chunk)
             finally:
+                # Disable the analyzer state register, then release the handle.
+                try:
+                    _set_state(dev, enable=False, speed=CaptureSpeed.AUTO)
+                except Exception as e:
+                    log.warning("could not disable analyzer state: %s", e)
+                try:
+                    usb.util.dispose_resources(dev)
+                except Exception as e:
+                    log.info("dispose_resources skipped: %s", e)
                 session.finished_at = time.time()
 
         t = threading.Thread(target=drainer, daemon=True, name=f"capture-{capture_id}")
@@ -175,13 +190,9 @@ def stop_capture() -> CaptureSession:
             raise RuntimeError("no active capture to stop")
         session = _active
 
+    # Drainer disables analyzer state and disposes the USB handle in its
+    # finally block, so we just signal stop and wait.
     session._stop_flag.set()
-    try:
-        dev = _open_analyzer()
-        _set_state(dev, enable=False, speed=CaptureSpeed.AUTO)
-    except Exception as e:
-        log.warning("could not disable analyzer state: %s", e)
-
     if session._thread is not None:
         session._thread.join(timeout=3.0)
 
