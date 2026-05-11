@@ -181,6 +181,14 @@ The capture path drives the analyzer applet directly through libusb (vendor requ
 
 The emulator path goes through facedancer's Moondancer backend, which talks libgreat-RPC to the SoC firmware running on the FPGA.
 
+## Proof of working
+
+See [`docs/HARDWARE-TEST-LOG.md`](./docs/HARDWARE-TEST-LOG.md) for a detailed
+bring-up log: an LLM driving `cynthion-mcp` through the full reverse-engineering
+loop on a Cynthion r1.4 — sniffing a Logitech wireless receiver, identifying
+an unknown Edimax Bluetooth dongle from its descriptors alone (VID/PID/MAC),
+and emulating an FTDI device that macOS IOKit registers.
+
 ## License
 
 BSD 3-Clause — see [LICENSE](./LICENSE). Same as the upstream Cynthion / LUNA / facedancer projects.
